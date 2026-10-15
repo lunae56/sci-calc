@@ -1,10 +1,22 @@
 ﻿# 严格对照测试：用 --batch 模式，一行输入 -> 一行输出，一一比对
 # 全程走 UTF-8 文件，绕开 PowerShell 传参对 √ / π 的破坏
+#
+# 路径自动定位，不依赖任何绝对路径：脚本在 <项目>/tests/ 下，
+# 所以项目根目录就是它的上一级。克隆到任何位置都能直接跑。
 
-$d       = "C:\Users\10386\Desktop\ds\sci-calc"
-$exe     = "$d\sci_calc.exe"
-$caseFile= "$d\tests\_cases.txt"
-$outFile = "$d\tests\_results.txt"
+$testsDir = $PSScriptRoot
+$d        = Split-Path $testsDir -Parent
+$exe      = Join-Path $d "sci_calc.exe"
+$caseFile = Join-Path $testsDir "_cases.txt"
+$outFile  = Join-Path $testsDir "_results.txt"
+
+if (-not (Test-Path $exe)) {
+    Write-Output "ERROR: sci_calc.exe not found at: $exe"
+    Write-Output "Build it first, from the project root:"
+    Write-Output "    Windows + VS2022 : run build.bat"
+    Write-Output "    g++ / clang++    : g++ -std=c++17 -O2 -o sci_calc scientific_calc.cpp"
+    exit 1
+}
 
 # [输入, 期望]；期望以 "ERROR:" 开头表示只比对错误类型
 $cases = @(
@@ -119,8 +131,8 @@ $exitCode = $LASTEXITCODE
 
 $results = @([System.IO.File]::ReadAllLines($outFile, [System.Text.Encoding]::UTF8))
 
-Write-Output "批处理退出码: $exitCode"
-Write-Output "用例数: $($cases.Count)   输出行数: $($results.Count)"
+Write-Output "batch exit code: $exitCode"
+Write-Output "cases: $($cases.Count)   output lines: $($results.Count)"
 Write-Output ""
 
 $pass = 0; $fail = 0; $failList = @()
@@ -133,8 +145,8 @@ foreach ($c in $cases) {
   if ($input -eq 'deg' -or $input -eq 'rad') { $pass++; continue }
 
   if ($ri -ge $results.Count) {
-    $fail++; $failList += "$input -> 缺少输出"
-    Write-Output ("  FAIL  {0,-28} 缺少输出" -f $input)
+    $fail++; $failList += "$input -> no output"
+    Write-Output ("  FAIL  {0,-28} no output" -f $input)
     continue
   }
   $got = $results[$ri].Trim()
@@ -151,15 +163,15 @@ foreach ($c in $cases) {
     Write-Output ("  PASS  {0,-28} -> {1}" -f $input, $got)
   } else {
     $fail++
-    $failList += ("{0,-28} 期望 {1}  实得 {2}" -f $input, $expect, $got)
-    Write-Output ("  FAIL  {0,-28} 期望 {1}  实得 {2}" -f $input, $expect, $got)
+    $failList += ("{0,-28} want {1}  got {2}" -f $input, $expect, $got)
+    Write-Output ("  FAIL  {0,-28} want {1}  got {2}" -f $input, $expect, $got)
   }
 }
 
 Write-Output ""
-Write-Output "================ $pass 通过 / $fail 失败 ================"
+Write-Output "============ $pass passed / $fail failed ============"
 if ($failList.Count -gt 0) {
   Write-Output ""
-  Write-Output "失败详情:"
+  Write-Output "failures:"
   $failList | ForEach-Object { "  - $_" }
 }
