@@ -1,0 +1,34 @@
+# ===== 编译产物 =====
+# cl / g++ 生成的可执行文件与中间文件
+sci_calc.exe
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+
+# Visual Studio 生成目录
+.vs/
+Debug/
+Release/
+x64/
+x86/
+
+# ===== 测试临时文件 =====
+# tests/run_tests.ps1 运行时会生成这两个文件
+tests/_cases.txt
+tests/_results.txt
+
+# ===== 编辑器 / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== 操作系统 =====
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,21 @@
+# 统一换行符策略，避免不同系统克隆后出现「整个文件都改了」的假 diff
+#
+# 源码：仓库里统一存 LF，检出时按各系统习惯转换
+* text=auto
+
+# 批处理文件必须是 CRLF
+# cmd.exe 对 LF 结尾的 .bat 在 if(...) 块、goto 标签等场景下可能出错，
+# 所以这里显式钉死，不管在什么系统上检出都用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell 脚本用 CRLF 在 Windows 上兼容性最好
+*.ps1 text eol=crlf
+
+# 二进制文件不要做任何换行符转换
+*.exe binary
+*.obj binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.zip binary
