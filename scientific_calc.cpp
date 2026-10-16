@@ -562,6 +562,12 @@ private:
                             " 处无定义（定义域错误）", pos_);
         }
         if (std::isinf(r)) {
+            // 区分正负无穷：log(0)/ln(0) 是趋向 -∞（对数在 0 处无定义），
+            // 说成「溢出」会让人误以为是数值太大。
+            if (r < 0.0) {
+                throw CalcError("函数 " + word + " 在 x=" + formatNumber(a, 12) +
+                                " 处趋向 -∞（该点无定义，检查定义域）", pos_);
+            }
             throw CalcError("函数 " + word + " 结果溢出", pos_);
         }
         if (equalsIgnoreCase(word, "asin") || equalsIgnoreCase(word, "acos") ||
@@ -583,6 +589,13 @@ std::string formatResult(double v) {
     if (isInteger) {
         std::snprintf(buf, sizeof(buf), "%.0f", v);
     } else {
+        // 这里刻意用 12 位有效数字，而不是能保证双精度往返的 17 位。
+        // 17 位虽然精确，但会把常用结果搞成这样：
+        //     0.1+0.2 -> 0.30000000000000004
+        //     sin(30) -> 0.49999999999999994
+        // 对计算器来说可读性更重要，所以取 12 位：
+        //     0.1+0.2 -> 0.3      sin(30) -> 0.5
+        // 代价是超过 12 位的数值会损失末尾精度——这是权衡后的有意选择。
         std::snprintf(buf, sizeof(buf), "%.12g", v);
     }
     return std::string(buf);
