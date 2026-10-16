@@ -38,6 +38,14 @@
 #include <cerrno>
 #include <string>
 #include <iostream>
+#include <fstream>
+
+// Windows 上 stdin/stdout 默认是文本模式，会把 CRLF 转成 LF、把 0x1A 当 EOF。
+// 批处理要按原样读字节，所以需要 _setmode + _O_BINARY（仅 MSVC/Windows 需要）。
+#if defined(_WIN32)
+#  include <io.h>
+#  include <fcntl.h>
+#endif
 
 // MSVC 会把 fopen 这类标准函数报成「不安全」并建议换成它专有的 _s 版本。
 // 这里用的是可移植的标准写法，所以显式关掉这条警告（其它编译器看不到这个宏）。
@@ -268,7 +276,7 @@ std::string formatNumber(double v, int sig) {
 class Parser {
 public:
     Parser(const std::string& src, double xValue)
-        : s_(src), n_(src.size()), pos_(0), x_(xValue), usesX_(false) {}
+        : s_(src), n_(src.size()), pos_(0), x_(xValue), usesX_(false), depth_(0) {}
 
     bool usesX() const { return usesX_; }
 
@@ -287,6 +295,29 @@ private:
     std::size_t pos_;
     double x_;
     bool usesX_;
+
+    // 嵌套深度。括号、函数调用、√ 都会让解析器递归，而递归下降每层要
+    // 经过 expr→term→unary→power→primary 五个函数。不加限制的话，几
+    // 千层括号就能把默认 1MB 的线程栈吃穿，导致栈溢出崩溃（0xC00000FD）。
+    int depth_;
+    static const int kMaxDepth = 200;
+
+    // RAII 守卫：进入一层递归就 +1，离开时（含抛异常）自动 -1，
+    // 不用在每个 return 分支手动维护。
+    class DepthGuard {
+    public:
+        explicit DepthGuard(Parser& p) : p_(p) {
+            if (++p_.depth_ > kMaxDepth) {
+                --p_.depth_;                          // 先把计数还回去，避免重复报错时越界
+                p_.fail("表达式嵌套太深，最多 " + std::to_string(kMaxDepth) + " 层");
+            }
+        }
+        ~DepthGuard() { --p_.depth_; }
+    private:
+        Parser& p_;
+        DepthGuard(const DepthGuard&);
+        DepthGuard& operator=(const DepthGuard&);
+    };
 
     // 解析器持有输入串的引用，不允许拷贝；显式声明可避免老编译器的警告
     Parser(const Parser&);
@@ -406,6 +437,7 @@ private:
         // --- 括号 ---
         if (c == '(') {
             ++pos_;
+            DepthGuard guard(*this);
             double v = parseExpr();
             skipSpace();
             if (pos_ >= n_ || s_[pos_] != ')') fail("缺少右括号 ')'");
@@ -420,6 +452,7 @@ private:
             (unsigned char)at(pos_ + 2) == 0x9A) {
             std::size_t opPos = pos_;
             pos_ += 3;
+            DepthGuard guard(*this);
             double v = parseUnary();
             if (v < 0.0) throw CalcError("对负数开平方", opPos);
             return std::sqrt(v);
@@ -446,6 +479,7 @@ private:
                     fail("函数 " + word + " 缺少参数，例如 " + word + "(2)");
                 }
 
+                DepthGuard guard(*this);
                 double arg = parseExpr();
                 skipSpace();
                 if (pos_ >= n_ || s_[pos_] != ')') fail("函数 " + word + " 缺少右括号 ')'");
@@ -859,23 +893,37 @@ void interactive() {
 // ---------------------------------------------------------------------------
 int runBatch(const char* path) {
     const char* name = (std::strcmp(path, "-") == 0) ? 0 : path;
-    FILE* fp = name ? std::fopen(name, "rb") : stdin;
-    if (!fp) {
-        outFormat("无法打开文件: %s\n", path);
-        return 2;
-    }
 
-    // 用 C 的逐行读取（getline 在 POSIX，fgets 到处都有，这里用 fgets 保证可移植）
-    char buf[8192];
-    int lineNo = 0;
+    // 逐行读取。
+    // 这里用 std::getline 而不是 fgets + 固定缓冲区：fgets 在行超过缓冲区时
+    // 会把一行截成多段，每段被当成独立表达式去求值，从而静默给出错误结果。
+    // getline 按需增长，任意长度都能正确处理。
+    std::ifstream file;
+    if (name) {
+        file.open(name, std::ios::in | std::ios::binary);
+        if (!file.is_open()) {
+            outFormat("无法打开文件: %s\n", path);
+            return 2;
+        }
+    }
+#if defined(_WIN32)
+    // 设成二进制模式，避免 CRT 做 CRLF 转换：
+    // 输出统一用 LF，和文件模式保持一致，方便脚本和 diff 工具比对。
+    _setmode(_fileno(stdout), _O_BINARY);
+    if (!name) {
+        _setmode(_fileno(stdin), _O_BINARY);
+    }
+#endif
+    std::istream& in = name ? static_cast<std::istream&>(file)
+                            : static_cast<std::istream&>(std::cin);
+
+    std::string line;
+    line.reserve(4096);                       // 常见行长的预分配，避免反复扩容
     int failed = 0;
 
-    while (std::fgets(buf, (int)sizeof(buf), fp)) {
-        ++lineNo;
-        std::string line(buf);
-
-        // 去掉行尾的 CR / LF
-        while (!line.empty() && (line[line.size() - 1] == '\n' || line[line.size() - 1] == '\r')) {
+    while (std::getline(in, line)) {
+        // 去掉行尾的 CR（二进制模式下 LF 已被 getline 吃掉，CR 还在）
+        while (!line.empty() && line[line.size() - 1] == '\r') {
             line.erase(line.size() - 1);
         }
         // 去掉首尾空白
@@ -902,7 +950,6 @@ int runBatch(const char* path) {
         }
     }
 
-    if (fp != stdin) std::fclose(fp);
     return failed > 0 ? 1 : 0;
 }
 
