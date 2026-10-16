@@ -13,7 +13,7 @@
 //  常量       pi / PI / π      e
 //  数字       123   3.14   .5   1e5   2.5E-3
 //  角度单位   角度制（默认）/ 弧度制，用 --deg / --rad 或交互里输入 deg/rad 切换
-//  额外       plot f(x) a b n —— 在终端用字符画函数图像，不需要图形库
+//  额外       plot f(x) a b [n] —— 在终端用字符画函数图像，不需要图形库（n 默认 70）
 //
 //  --- 错误处理 ---------------------------------------------------------------
 //  除零、非法字符、括号不匹配、缺右操作数、函数参数个数不对、
@@ -597,7 +597,7 @@ void printHelp() {
     outLine("  数字     3.14   .5   1e5   2.5E-3");
     outLine("  命令     help / ?              帮助");
     outLine("           deg / rad             切换角度制 / 弧度制");
-    outLine("           plot f(x) a b [n]     在 [a,b] 上画 n 段字符图");
+    outLine("           plot f(x) a b [n]      在 [a,b] 上画 n 段字符图，默认 70");
     outLine("           quit / exit / q       退出");
     outLine("说明：乘方右结合，2^3^2 = 2^(3^2) = 512；-2^2 = -(2^2) = -4。");
     outLine("命令行：sci_calc [--deg|--rad] \"表达式\"");
@@ -760,21 +760,35 @@ void interactive() {
         if (cmd.size() > 4 && equalsIgnoreCase(cmd.substr(0, 4), "plot") &&
             (cmd.size() == 4 || cmd[4] == ' ' || cmd[4] == '\t')) {
             std::string body = cmd.substr(4);
-            double args[3] = { 0.0, 0.0, 0.0 };
-            bool argOk[3] = { false, false, false };
+            double xStart = 0.0, xEnd = 0.0;           // 起点、终点（必填）
+            double xCols = 70.0;                       // 采样点数（可选，默认 70）
+            bool haveStart = false, haveEnd = false, haveCols = false;
 
-            // 从右往左切最多 3 个数字参数，剩下的整体交给表达式
-            for (int k = 2; k >= 0; --k) {
+            // 参数从右往左剥，规则：
+            //   最后两个数字 token 依次是「终点」「起点」——这两个是必填的；
+            //   再往左如果还有一个纯数字 token，那才是可选的「采样点数」。
+            // 最多剥 3 个；一旦遇到非数字 token（也就是表达式）就停手。
+            //
+            // 注意：判断「是不是数字」必须用 strtod 做严格字面量判断，
+            // 不能用 evaluate()——它会把 x、pi、e 也当成解析成功
+            // （x 是自变量返回 0，pi/e 是常量），会把表达式本身误剥掉。
+            double peeled[3] = { 0.0, 0.0, 0.0 };      // 从右往左剥到的数字
+            int peeledCount = 0;
+
+            for (int k = 0; k < 3; ++k) {
                 std::size_t sp = body.find_last_not_of(" \t");
                 if (sp == std::string::npos) break;
                 std::size_t sp2 = body.find_last_of(" \t", sp);
                 std::string tok = (sp2 == std::string::npos)
                                       ? body.substr(0, sp + 1)
                                       : body.substr(sp2 + 1, sp - sp2);
-                ParseResult num = evaluate(tok, 0.0);
-                if (!num.ok) break;                    // 不是数字，说明参数到此为止
-                args[k] = num.value;
-                argOk[k] = true;
+
+                const char* tbegin = tok.c_str();
+                char* tend = 0;
+                double val = std::strtod(tbegin, &tend);
+                if (tend == tbegin || *tend != '\0') break;   // 不是纯数字，到此为止
+
+                peeled[peeledCount++] = val;
                 body = (sp2 == std::string::npos) ? std::string() : body.substr(0, sp2);
             }
 
@@ -784,13 +798,47 @@ void interactive() {
                                    ? std::string()
                                    : body.substr(eb, ee - eb + 1);
 
-            if (!argOk[0] || !argOk[1] || expr.empty()) {
+            // 按剥取个数把参数对号入座。
+            // peeled[] 是从右往左装的，所以：
+            //   剥到 3 个  ->  [0]=采样点数  [1]=终点  [2]=起点
+            //   剥到 2 个  ->  [0]=终点      [1]=起点
+            if (peeledCount >= 3) {
+                xCols = peeled[0];
+                xEnd = peeled[1];
+                xStart = peeled[2];
+                haveCols = haveStart = haveEnd = true;
+            } else if (peeledCount == 2) {
+                xEnd = peeled[0];
+                xStart = peeled[1];
+                haveStart = haveEnd = true;
+            }
+
+            // 表达式只剩纯数字时无法与「采样点数」区分，明确报错而不是猜
+            bool exprIsBareNumber = false;
+            if (!expr.empty()) {
+                const char* q = expr.c_str();
+                char* qe = 0;
+                std::strtod(q, &qe);
+                exprIsBareNumber = (qe != q && *qe == '\0');
+            }
+
+            if (!haveStart || !haveEnd || expr.empty()) {
                 outLine("用法: plot 表达式 起点 终点 [采样点数]");
-                outLine("例如: plot sin(x) 0 360 70");
+                outLine("例如: plot sin(x) 0 360 70        （省略采样点数时默认 70）");
+                // 尾部数字全被当成参数剥掉了，说明表达式缺失或本身就是纯数字。
+                // 纯数字表达式没法画图（也无从和参数区分），单独说明一下。
+                if (peeledCount >= 2 && expr.empty()) {
+                    outLine("（注意：表达式必须包含自变量 x，不能是纯数字）");
+                }
                 continue;
             }
-            int cols = argOk[2] ? (int)args[2] : 70;
-            runPlot(expr, args[0], args[1], cols);
+            if (exprIsBareNumber) {
+                outLine("表达式不能是纯数字（会与起点/终点/采样点数混淆），请包含自变量 x");
+                outLine("例如: plot x 0 10 或 plot sin(x) 0 360 70");
+                continue;
+            }
+            int cols = haveCols ? (int)xCols : 70;
+            runPlot(expr, xStart, xEnd, cols);
             continue;
         }
 
